@@ -1,0 +1,309 @@
+import math
+import tkinter as tk
+from tkinter import ttk
+
+
+def rotate_x(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    return x, y * cos_a - z * sin_a, y * sin_a + z * cos_a
+
+def rotate_y(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    return x * cos_a + z * sin_a, y, -x * sin_a + z * cos_a
+
+def rotate_z(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    return x * cos_a - y * sin_a, x * sin_a + y * cos_a, z
+
+def project(x, y, z, w, h, fov, camera_dist):
+    z_dist = z + camera_dist
+    if z_dist <= 0.1: 
+        z_dist = 0.1
+    factor = fov / z_dist
+    return x * factor + w / 2, -y * factor + h / 2
+
+
+class Mesh:
+    def __init__(self, name, vertices, faces, color="#44aaff"):
+        self.name = name
+        self.vertices = vertices  
+        self.faces = faces
+        self.color = color
+        
+        self.location = [0.0, 0.0, 0.0]
+        self.rotation = [0.0, 0.0, 0.0] 
+        self.scale = [1.0, 1.0, 1.0]
+
+def create_cube(name="Cube", color="#44aaff"):
+    return Mesh(name, [
+        (-1,-1,-1), (1,-1,-1), (1,1,-1), (-1,1,-1),
+        (-1,-1,1),  (1,-1,1),  (1,1,1),  (-1,1,1)
+    ], [
+        (0,1,2,3), (4,5,6,7), (0,1,5,4),
+        (2,3,7,6), (1,2,6,5), (0,3,7,4)
+    ], color)
+
+def create_uv_sphere(name="Sphere", rings=12, segments=16, color="#55ff55"):
+    vertices = []
+    faces = []
+    for r in range(rings + 1):
+        phi = math.pi * r / rings
+        for s in range(segments):
+            theta = 2 * math.pi * s / segments
+            x = math.sin(phi) * math.cos(theta)
+            y = math.cos(phi)
+            z = math.sin(phi) * math.sin(theta)
+            vertices.append((x, y, z))
+            
+    for r in range(rings):
+        for s in range(segments):
+            p0 = r * segments + s
+            p1 = r * segments + (s + 1) % segments
+            p2 = (r + 1) * segments + (s + 1) % segments
+            p3 = (r + 1) * segments + s
+            faces.append((p0, p1, p2, p3))
+            
+    return Mesh(name, vertices, faces, color)
+
+def create_monkey(name="Suzanne (Monkey)", color="#ffaa44"):
+    vertices = [
+        (-0.6, 0.6, 0.5), (0.6, 0.6, 0.5), (0.0, 0.8, 0.4), (-0.3, 0.9, 0.0), (0.3, 0.9, 0.0),
+        (-0.2, 0.4, 0.6), (0.2, 0.4, 0.6), (-0.5, 0.3, 0.4), (0.5, 0.3, 0.4),
+        (0.0, 0.0, 0.8), (-0.3, -0.2, 0.7), (0.3, -0.2, 0.7), (0.0, -0.5, 0.5),
+        (-0.7, 0.2, -0.6), (0.7, 0.2, -0.6), (0.0, 0.6, -0.8), (0.0, -0.6, -0.5),
+        (-0.8, 0.3, 0.0), (-1.2, 0.5, -0.2), (-1.1, 0.0, -0.3),
+        (0.8, 0.3, 0.0), (1.2, 0.5, -0.2), (1.1, 0.0, -0.3)
+    ]
+    faces = [
+        (0, 2, 1, 6, 5), (2, 3, 4), (0, 3, 15, 13), (1, 4, 15, 14), 
+        (0, 5, 9, 10, 7), (1, 6, 9, 11, 8), (10, 9, 11, 12), 
+        (7, 10, 12, 16, 13), (8, 11, 12, 16, 14), (13, 15, 14, 16), 
+        (0, 7, 17, 18, 13), (17, 18, 19), 
+        (1, 8, 20, 21, 14), (20, 21, 22)  
+    ]
+    return Mesh(name, vertices, faces, color)
+
+
+class MiniBlender:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Mini Blender v5")
+        self.root.geometry("1200x800")
+        self.root.configure(bg="#212121")
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(".", background="#212121", foreground="white", fieldbackground="#333333")
+        style.configure("TLabel", background="#212121", foreground="#ccc")
+
+        self.fov = 500
+        self.camera_distance = 7.0
+        self.cam_rot_x = 25.0
+        self.cam_rot_y = -45.0
+
+        self.dragging = True
+        self.last_mouse = (0, 0)
+        self.show_wireframe = tk.BooleanVar(value=True)
+        
+        self.scene_objects = [create_monkey("Suzanne.001")]
+        self.active_obj_idx = 0
+
+        self.build_ui()
+        self.update_properties_panel()
+        self.animate()
+
+    def build_ui(self):
+        sidebar = tk.Frame(self.root, width=280, bg="#1a1a1a", bd=0)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        tk.Label(sidebar, text="Outliner Space", font=("Arial", 10, "bold"), fg="#888", bg="#1a1a1a").pack(anchor="w", pady=10, padx=10)
+        self.outliner = tk.Listbox(sidebar, bg="#262626", fg="#fff", selectbackground="#ff9800", bd=0, highlightthickness=0, height=6)
+        self.outliner.pack(fill="x", padx=10, pady=5)
+        self.outliner.bind("<<ListboxSelect>>", self.on_object_select)
+
+        add_frame = tk.Frame(sidebar, bg="#1a1a1a")
+        add_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Button(add_frame, text="+ Cube", command=lambda: self.add_mesh("Cube")).pack(side="left", expand=True, padx=2)
+        ttk.Button(add_frame, text="+ Sphere", command=lambda: self.add_mesh("Sphere")).pack(side="left", expand=True, padx=2)
+        ttk.Button(add_frame, text="+ Monkey", command=lambda: self.add_mesh("Monkey")).pack(side="left", expand=True, padx=2)
+
+        view_frame = tk.LabelFrame(sidebar, text="Viewport Overlays", bg="#1a1a1a", fg="#888", padx=5, pady=5)
+        view_frame.pack(fill="x", padx=10, pady=10)
+        ttk.Checkbutton(view_frame, text="Show Mesh Wireframe", variable=self.show_wireframe).pack(anchor="w")
+
+        ttk.Separator(sidebar, orient="horizontal").pack(fill="x", pady=5)
+
+        tk.Label(sidebar, text="Transform Attributes", font=("Arial", 10, "bold"), fg="#888", bg="#1a1a1a").pack(anchor="w", padx=10)
+        self.prop_entries = {}
+        for block_name, key in [("Location", "loc"), ("Rotation", "rot"), ("Scale", "scl")]:
+            frame = tk.LabelFrame(sidebar, text=block_name, bg="#1a1a1a", fg="#666", padx=8, pady=4)
+            frame.pack(fill="x", padx=10, pady=4)
+            for i, axis in enumerate(["X", "Y", "Z"]):
+                row = tk.Frame(frame, bg="#1a1a1a")
+                row.pack(fill="x", pady=1)
+                tk.Label(row, text=axis, width=2, bg="#1a1a1a", fg="#999").pack(side="left")
+                entry = ttk.Entry(row, width=8)
+                entry.pack(side="right", expand=True, fill="x")
+                entry.bind("<Return>", self.apply_transforms)
+                self.prop_entries[f"{key}_{i}"] = entry
+
+        ttk.Button(sidebar, text="Update Mesh", command=self.apply_transforms).pack(fill="x", padx=10, pady=12)
+        self.refresh_outliner()
+
+        self.canvas = tk.Canvas(self.root, bg="#3d3d3d", highlightthickness=0)
+        self.canvas.pack(side="right", expand=True, fill="both")
+        
+        self.canvas.bind("<ButtonPress-1>", self.start_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.stop_drag)
+        self.canvas.bind("<B1-Motion>", self.drag)
+        self.canvas.bind("<MouseWheel>", self.zoom)
+
+ 
+    def refresh_outliner(self):
+        self.outliner.delete(0, tk.END)
+        for obj in self.scene_objects:
+            self.outliner.insert(tk.END, f"  🔶 {obj.name}")
+        self.outliner.selection_set(self.active_obj_idx)
+
+    def add_mesh(self, item_type):
+        idx = len(self.scene_objects) + 1
+        if item_type == "Cube": obj = create_cube(f"Cube.{idx:03d}")
+        elif item_type == "Sphere": obj = create_uv_sphere(f"Sphere.{idx:03d}")
+        else: obj = create_monkey(f"Suzanne.{idx:03d}")
+        
+        self.scene_objects.append(obj)
+        self.active_obj_idx = len(self.scene_objects) - 1
+        self.refresh_outliner()
+        self.update_properties_panel()
+
+    def on_object_select(self, e):
+        sel = self.outliner.curselection()
+        if sel:
+            self.active_obj_idx = sel[0]
+            self.update_properties_panel()
+
+    def update_properties_panel(self):
+        if not self.scene_objects: return
+        obj = self.scene_objects[self.active_obj_idx]
+        for i, key in enumerate(["loc", "rot", "scl"]):
+            val_array = getattr(obj, "location" if key=="loc" else "rotation" if key=="rot" else "scale")
+            for axis_idx in range(3):
+                self.prop_entries[f"{key}_{axis_idx}"].delete(0, tk.END)
+                self.prop_entries[f"{key}_{axis_idx}"].insert(0, f"{val_array[axis_idx]:.2f}")
+
+    def apply_transforms(self, e=None):
+        if not self.scene_objects: return
+        obj = self.scene_objects[self.active_obj_idx]
+        try:
+            for i in range(3):
+                obj.location[i] = float(self.prop_entries[f"loc_{i}"].get())
+                obj.rotation[i] = float(self.prop_entries[f"rot_{i}"].get())
+                obj.scale[i] = float(self.prop_entries[f"scl_{i}"].get())
+        except ValueError: pass
+
+    def start_drag(self, e): self.dragging = True; self.last_mouse = (e.x, e.y)
+    def stop_drag(self, _): self.dragging = False
+    def drag(self, e):
+        if not self.dragging: return
+        self.cam_rot_y += (e.x - self.last_mouse[0]) * 0.35
+        self.cam_rot_x += (e.y - self.last_mouse[1]) * 0.35
+        self.last_mouse = (e.x, e.y)
+    def zoom(self, e):
+        self.camera_distance = max(1.5, min(25.0, self.camera_distance + (-0.5 if e.delta > 0 else 0.5)))
+
+   
+ 
+    def get_grid_elements(self):
+        elements = []
+        g_range = 6
+        for i in range(-g_range, g_range + 1):
+            cx1, cy1, cz1 = rotate_y(*rotate_x(i, -1.0, -g_range, self.cam_rot_x), self.cam_rot_y)
+            cx2, cy2, cz2 = rotate_y(*rotate_x(i, -1.0, g_range, self.cam_rot_x), self.cam_rot_y)
+            avg_z = (cz1 + cz2) / 2.0
+            elements.append((avg_z, "grid_line", [(cx1, cy1, cz1), (cx2, cy2, cz2)], "#4a4a4a"))
+
+            cx1, cy1, cz1 = rotate_y(*rotate_x(-g_range, -1.0, i, self.cam_rot_x), self.cam_rot_y)
+            cx2, cy2, cz2 = rotate_y(*rotate_x(g_range, -1.0, i, self.cam_rot_x), self.cam_rot_y)
+            avg_z = (cz1 + cz2) / 2.0
+            elements.append((avg_z, "grid_line", [(cx1, cy1, cz1), (cx2, cy2, cz2)], "#4a4a4a"))
+        return elements
+
+    def render_scene(self):
+        self.canvas.delete("all")
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w < 10 or h < 10: return
+
+        render_queue = self.get_grid_elements()
+
+        for obj_idx, obj in enumerate(self.scene_objects):
+            transformed_vertices = []
+            for vx, vy, vz in obj.vertices:
+                x, y, z = vx * obj.scale[0], vy * obj.scale[1], vz * obj.scale[2]
+                x, y, z = rotate_x(x, y, z, obj.rotation[0])
+                x, y, z = rotate_y(x, y, z, obj.rotation[1])
+                x, y, z = rotate_z(x, y, z, obj.rotation[2])
+                x += obj.location[0]
+                y += obj.location[1]
+                z += obj.location[2]
+
+                cx, cy, cz = rotate_y(*rotate_x(x, y, z, self.cam_rot_x), self.cam_rot_y)
+                transformed_vertices.append((cx, cy, cz))
+
+            for face in obj.faces:
+                face_pts = [transformed_vertices[i] for i in face]
+                avg_z = sum(p[2] for p in face_pts) / len(face_pts)
+
+                ax, ay, az = face_pts[1][0] - face_pts[0][0], face_pts[1][1] - face_pts[0][1], face_pts[1][2] - face_pts[0][2]
+                bx, by, bz = face_pts[2][0] - face_pts[0][0], face_pts[2][1] - face_pts[0][1], face_pts[2][2] - face_pts[0][2]
+                nx, ny, nz = ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx
+                
+                v_len = math.sqrt(nx*nx + ny*ny + nz*nz) or 1e-6
+                nx, ny, nz = nx/v_len, ny/v_len, nz/v_len
+
+                if nz > 0.0: continue
+
+                lx, ly, lz = 0.5, 1.0, -0.4
+                l_len = math.sqrt(lx*lx + ly*ly + lz*lz)
+                dot = nx*(lx/l_len) + ny*(ly/l_len) + nz*(lz/l_len)
+                shade = max(0.15, min(1.0, (dot + 1.0) / 2.0))
+
+                is_sel = (obj_idx == self.active_obj_idx)
+                render_queue.append((avg_z, "poly", face_pts, obj.color, shade, is_sel))
+
+        render_queue.sort(key=lambda item: item[0], reverse=True)
+
+        for entry in render_queue:
+            if entry[1] == "grid_line":
+                _, _, pts3d, color = entry
+                p1 = project(pts3d[0][0], pts3d[0][1], pts3d[0][2], w, h, self.fov, self.camera_distance)
+                p2 = project(pts3d[1][0], pts3d[1][1], pts3d[1][2], w, h, self.fov, self.camera_distance)
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=color, width=1)
+            
+            elif entry[1] == "poly":
+                _, _, face_pts, base_color, shade, is_sel = entry
+                pts2d = [project(p[0], p[1], p[2], w, h, self.fov, self.camera_distance) for p in face_pts]
+                flat_coords = [c for pt in pts2d for c in pt]
+
+                fill_color = self.get_shaded_color(base_color, shade)
+                outline = "#ff9800" if is_sel else "#222" if self.show_wireframe.get() else ""
+
+                self.canvas.create_polygon(flat_coords, fill=fill_color, outline=outline, width=1)
+
+    def get_shaded_color(self, hex_color, factor):
+        r = int(int(hex_color[1:3], 16) * factor)
+        g = int(int(hex_color[3:5], 16) * factor)
+        b = int(int(hex_color[5:7], 16) * factor)
+        return f"#{max(0, min(255, r)):02x}#{max(0, min(255, g)):02x}#{max(0, min(255, b)):02x}".replace("##", "")
+
+    def animate(self):
+        self.render_scene()
+        self.root.after(16, self.animate)
+
+    def run(self): self.root.mainloop()
+
+if __name__ == "__main__":
+    MiniBlender().run()
